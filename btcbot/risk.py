@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 from .config import CONFIG
@@ -88,28 +89,33 @@ class RiskManager:
             self.consecutive_losses = 0
             self._loss_cooldown_until = 0.0
 
-        if signal.poly_implied_prob > CONFIG.max_price_to_pay:
+        price_to_pay = (
+            signal.expected_entry_price
+            if signal.expected_entry_price is not None
+            else signal.poly_implied_prob
+        )
+        if price_to_pay > CONFIG.max_price_to_pay:
             log.debug(
                 "Price too high: %.3f > %.3f",
-                signal.poly_implied_prob,
+                price_to_pay,
                 CONFIG.max_price_to_pay,
             )
             return False
 
-        if signal.poly_implied_prob < CONFIG.min_price_to_pay:
+        if price_to_pay < CONFIG.min_price_to_pay:
             log.debug(
                 "Price too low: %.3f < %.3f",
-                signal.poly_implied_prob,
+                price_to_pay,
                 CONFIG.min_price_to_pay,
             )
             return False
 
         # Dynamic min_edge: require more edge in choppy markets
         effective_min_edge = CONFIG.min_edge + choppiness * 0.05
-        if signal.edge < effective_min_edge:
+        if signal.net_edge < effective_min_edge:
             log.debug(
                 "Edge too small: %.3f < %.3f (chop=%.2f)",
-                signal.edge, effective_min_edge, choppiness,
+                signal.net_edge, effective_min_edge, choppiness,
             )
             return False
 
@@ -124,7 +130,11 @@ class RiskManager:
 
         Position is scaled down in choppy (mean-reverting) markets.
         """
-        price = signal.poly_implied_prob
+        price = (
+            signal.estimated_entry_cost_per_share
+            if signal.estimated_entry_cost_per_share is not None
+            else signal.poly_implied_prob
+        )
         if price <= 0.01 or price >= 0.99:
             return CONFIG.min_position_usd
 
@@ -154,14 +164,13 @@ class RiskManager:
     ) -> bool:
         """Check whether an open position should be hedged.
 
-        Hedge when our token has dropped significantly from entry price,
-        signalling the bet is likely wrong. Hedging (buying the opposite
-        side) caps the loss instead of risking 100%.
+        Hedge after a significant drop from entry, or when the opposite token
+        reaches $0.845 in the final 90 seconds. Buying the opposite side limits
+        losses but can reduce profit if the original side wins.
 
         Guards prevent hedging when it would destroy value:
         - Too early (price can still recover)
-        - Too close to resolution (let it ride)
-        - Opposite side too expensive (minimal loss reduction)
+        - Opposite side too expensive before the final 90 seconds
         - In choppy markets the threshold is raised (drops reverse often)
         """
         if not CONFIG.hedge_enabled:
@@ -170,29 +179,36 @@ class RiskManager:
             return False
 
         remaining = position.market.seconds_remaining
-        if remaining < 30:
-            return False  # Too close to resolution, let it ride
-
-        # Don't hedge in the first half of the window — price can recover
-        if remaining > 150:
-            return False
-
-        our_price = poly_feed.get_price(position.token_id)
-        if our_price is None:
+        if remaining > 120:
             return False
 
         if position.fill_price <= 0:
             return False
 
         # Don't hedge when the opposite side is too expensive — the locked-in
-        # loss (entry + hedge - 1.0) would be nearly as bad as losing outright
+        # loss (entry + hedge - 1.0) would be nearly as bad as losing outright.
         if opposite_price is not None and opposite_price > 0:
+            if (
+                remaining <= 90
+                and math.isfinite(opposite_price)
+                and 0.845 <= opposite_price < 1.0
+            ):
+                log.info(
+                    "Late hedge triggered: %.1fs remain, opposite price=%.3f",
+                    remaining,
+                    opposite_price,
+                )
+                return True
             if opposite_price > 0.85:
                 log.debug(
                     "Hedge skipped: opposite price %.3f too expensive",
                     opposite_price,
                 )
                 return False
+
+        our_price = poly_feed.get_price(position.token_id)
+        if our_price is None:
+            return False
 
         # In choppy markets drops reverse more often — raise the bar
         effective_threshold = max(0.10, CONFIG.hedge_trigger_threshold + (choppiness * 0.05))

@@ -13,6 +13,8 @@ env/
 
 # Environment variables
 .env
+.env.*
+!.env.example
 .env.backup
 
 # Database
@@ -36,6 +38,7 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+.playwright-cli/
 
 # mypy / type checkers
 .mypy_cache/

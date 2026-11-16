@@ -133,6 +133,15 @@ class TestSignalGenerator:
         )
         assert sig.strength == 0.0
 
+        candidate = gen.evaluate(
+            btc_price=base + 100,
+            poly_up_price=0.40,
+            poly_down_price=0.60,
+            time_remaining_sec=280,
+            apply_time_gate=False,
+        )
+        assert candidate.strength > 0.0
+
     def test_cooldown_kills_strength(self, gen: SignalGenerator, market: Market):
         """During cooldown period, strength should be 0."""
         base = 50000
@@ -147,6 +156,15 @@ class TestSignalGenerator:
             time_remaining_sec=30,  # Only 30s left = cooldown
         )
         assert sig.strength == 0.0
+
+        candidate = gen.evaluate(
+            btc_price=base + 100,
+            poly_up_price=0.40,
+            poly_down_price=0.60,
+            time_remaining_sec=30,
+            apply_time_gate=False,
+        )
+        assert candidate.strength > 0.0
 
     def test_fair_prob_clamped(self, gen: SignalGenerator, market: Market):
         base = 50000
@@ -173,7 +191,7 @@ class TestSignalGenerator:
         gen.update_chainlink_price(50010, market.start_ts + 1)
         assert gen._chainlink_start_price == 50010
 
-    def test_reversal_setup_kills_strength(self, gen: SignalGenerator, market: Market):
+    def test_reversal_with_confirming_momentum_remains_eligible(self, gen: SignalGenerator, market: Market):
         base = 50000
         t = market.start_ts
         gen.update_chainlink_price(base, t)
@@ -190,7 +208,8 @@ class TestSignalGenerator:
                 poly_down_price=0.70,
                 time_remaining_sec=150,
             )
-        assert sig.strength == 0.0
+        assert sig.direction == "DOWN"
+        assert sig.strength > 0.0
 
     def test_small_reversal_noise_does_not_kill_strength(self, gen: SignalGenerator, market: Market):
         base = 50000

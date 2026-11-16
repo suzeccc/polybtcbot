@@ -26,6 +26,9 @@ EDGE_BUCKETS = [
 STRENGTH_BUCKETS = [
     (0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.01),
 ]
+PROBABILITY_BUCKETS = [
+    (0.0, 0.4), (0.4, 0.5), (0.5, 0.6), (0.6, 0.7), (0.7, 1.01),
+]
 # Seconds remaining in the 5-min window when the ENTRY was placed.
 TIME_REMAINING_BUCKETS = [
     (270, 301), (240, 270), (210, 240), (180, 210), (150, 180),
@@ -39,6 +42,9 @@ class Entry:
     direction: str
     amount_usd: float
     signal_edge: float
+    signal_net_edge: float | None
+    signal_fair_prob: float | None
+    fee_usd: float
     signal_strength: float
     created_at: int
     start_ts: int
@@ -65,9 +71,14 @@ def load_entries(mode: str) -> list[Entry]:
     # bias if you filter on it.
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(trades)")}
+        fair_prob_column = "t.signal_fair_prob" if "signal_fair_prob" in columns else "NULL AS signal_fair_prob"
+        net_edge_column = "t.signal_net_edge" if "signal_net_edge" in columns else "NULL AS signal_net_edge"
+        fee_column = "t.fee_usd" if "fee_usd" in columns else "0 AS fee_usd"
         rows = conn.execute(f"""
             SELECT t.market_slug, t.direction, t.amount_usd,
-                   t.signal_edge, t.signal_strength, t.created_at, t.is_paper,
+                   t.signal_edge, {net_edge_column}, {fair_prob_column}, {fee_column},
+                   t.signal_strength, t.created_at, t.is_paper,
                    m.start_ts, m.outcome,
                    mr.net_pnl_usd, mr.hedge_cost_usd
             FROM trades t
@@ -85,6 +96,9 @@ def load_entries(mode: str) -> list[Entry]:
             direction=r["direction"],
             amount_usd=r["amount_usd"],
             signal_edge=r["signal_edge"] or 0.0,
+            signal_net_edge=r["signal_net_edge"],
+            signal_fair_prob=r["signal_fair_prob"],
+            fee_usd=r["fee_usd"] or 0.0,
             signal_strength=r["signal_strength"] or 0.0,
             created_at=r["created_at"],
             start_ts=r["start_ts"],
@@ -104,23 +118,41 @@ def bucket(entries: list[Entry], key, ranges: list[tuple[float, float]]):
     ]
 
 
-def _row(label: str, es: list[Entry]) -> str:
+def _row(label: str, es: list[Entry], edge_key: str = "signal_edge") -> str:
     n = len(es)
     if n == 0:
         return f"  {label:<18} {0:>4}     —       —          —          —"
     wins = sum(1 for e in es if e.outcome_correct == 1)
     wr = wins / n
     pnl = sum(e.net_pnl for e in es)
-    avg_edge = sum(e.signal_edge for e in es) / n
+    avg_edge = sum(getattr(e, edge_key) or 0.0 for e in es) / n
     return f"  {label:<18} {n:>4} {wins:>5} {wr:>6.1%} {pnl:>+9.2f} {avg_edge:>10.3f}"
 
 
-def print_table(title: str, buckets) -> None:
+def print_table(title: str, buckets, edge_key: str = "signal_edge") -> None:
     print(f"\n{title}")
     print(f"  {'Bucket':<18} {'n':>4} {'wins':>5} {'WR':>6} {'P&L ($)':>9} {'avg edge':>10}")
     print(f"  {'-' * 58}")
     for label, es in buckets:
-        print(_row(label, es))
+        print(_row(label, es, edge_key))
+
+
+def print_probability_calibration(entries: list[Entry]) -> None:
+    entries = [e for e in entries if e.signal_fair_prob is not None]
+    print("\nCalibration by predicted win probability  (want: predicted ≈ realized WR)")
+    print(f"  {'Bucket':<18} {'n':>4} {'predicted':>10} {'realized':>10} {'gap':>8}")
+    print(f"  {'-' * 54}")
+    for low, high in PROBABILITY_BUCKETS:
+        group = [e for e in entries if low <= e.signal_fair_prob < high]
+        if not group:
+            print(f"  [{low:>4.0%}, {high:>4.0%}){'':<7} {0:>4} {'—':>10} {'—':>10} {'—':>8}")
+            continue
+        predicted = sum(e.signal_fair_prob for e in group) / len(group)
+        realized = sum(e.outcome_correct for e in group) / len(group)
+        print(
+            f"  [{low:>4.0%}, {high:>4.0%}){'':<7} {len(group):>4} "
+            f"{predicted:>9.1%} {realized:>9.1%} {realized - predicted:>+7.1%}"
+        )
 
 
 def print_summary(title: str, entries: list[Entry]) -> None:
@@ -132,7 +164,7 @@ def print_summary(title: str, entries: list[Entry]) -> None:
     wins = sum(1 for e in entries if e.outcome_correct == 1)
     hedged = sum(1 for e in entries if e.hedge_cost > 0)
     total_pnl = sum(e.net_pnl for e in entries)
-    total_risked = sum(e.amount_usd + e.hedge_cost for e in entries)
+    total_risked = sum(e.amount_usd + e.fee_usd + e.hedge_cost for e in entries)
     roi = total_pnl / total_risked if total_risked > 0 else 0.0
     avg_edge = sum(e.signal_edge for e in entries) / n
     avg_str = sum(e.signal_strength for e in entries) / n
@@ -161,10 +193,20 @@ def main() -> None:
         print("\nNo resolved trades yet. Run the bot and wait for markets to resolve.")
         return
 
+    print_probability_calibration(entries)
+
     print_table(
         "Calibration by predicted edge  (want: WR rising with edge)",
         bucket(entries, lambda e: e.signal_edge, EDGE_BUCKETS),
     )
+
+    net_edge_entries = [e for e in entries if e.signal_net_edge is not None]
+    if net_edge_entries:
+        print_table(
+            "Calibration by net edge after estimated slippage and fees",
+            bucket(net_edge_entries, lambda e: e.signal_net_edge, EDGE_BUCKETS),
+            edge_key="signal_net_edge",
+        )
 
     print_table(
         "Calibration by signal strength",

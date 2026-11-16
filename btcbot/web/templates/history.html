@@ -72,6 +72,7 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+  const t = text => window.translateUI(text);
   const ctx = document.getElementById('equityChart');
   if (!ctx) return;
 
@@ -84,12 +85,12 @@ document.addEventListener('DOMContentLoaded', function() {
       let running = 0;
       data.forEach(d => { running += d.net_pnl_usd; cumulative.push(running); });
 
-      new Chart(ctx, {
+      const chart = new Chart(ctx, {
         type: 'line',
         data: {
           labels: labels,
           datasets: [{
-            label: 'Cumulative P&L',
+            label: t('Cumulative P&L'),
             data: cumulative,
             borderColor: cumulative[cumulative.length-1] >= 0 ? '#3fb950' : '#f85149',
             backgroundColor: cumulative[cumulative.length-1] >= 0
@@ -122,11 +123,15 @@ document.addEventListener('DOMContentLoaded', function() {
               borderWidth: 1,
               displayColors: false,
               callbacks: {
-                label: (ctx) => 'Net P&L: $' + ctx.parsed.y.toFixed(2)
+                label: (ctx) => t('Net P&L: ') + '$' + ctx.parsed.y.toFixed(2)
               }
             }
           }
         }
+      });
+      document.addEventListener('ui-languagechange', () => {
+        chart.data.datasets[0].label = t('Cumulative P&L');
+        chart.update();
       });
     });
 });

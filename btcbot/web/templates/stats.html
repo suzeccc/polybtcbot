@@ -78,9 +78,11 @@
 <script>
 /* Stats page — period switching + Chart.js rendering */
 (function() {
+  const t = text => window.translateUI(text);
   const charts = { equity: null, bars: null, distribution: null };
   let currentPeriod = "day";
   let inFlight = false;
+  let latestData = null;
 
   /* ── Formatting helpers ─────────────────────────────────────── */
   function formatUsd(n) {
@@ -168,7 +170,7 @@
       data: {
         labels: labels,
         datasets: [{
-          label: "Cumulative P&L",
+          label: t("Cumulative P&L"),
           data: values,
           borderColor: "#58a6ff",
           borderWidth: 3,
@@ -196,7 +198,7 @@
           legend: { display: false },
           tooltip: {
             ...sharedTooltip,
-            callbacks: { label: (c) => "Equity: $" + c.parsed.y.toFixed(2) },
+            callbacks: { label: (c) => t("Equity: $") + c.parsed.y.toFixed(2) },
           },
         },
       },
@@ -209,7 +211,7 @@
       data: {
         labels: labels,
         datasets: [{
-          label: "Net P&L",
+          label: t("Net P&L"),
           data: values,
           backgroundColor: values.map(v => v >= 0 ? "rgba(63, 185, 80, 0.5)" : "rgba(248, 81, 73, 0.5)"),
           borderColor: values.map(v => v >= 0 ? "#3fb950" : "#f85149"),
@@ -232,8 +234,8 @@
           tooltip: {
             ...sharedTooltip,
             callbacks: {
-              label: (c) => "Net P&L: $" + c.parsed.y.toFixed(2),
-              afterLabel: (c) => (trades[c.dataIndex] || 0) + " trade(s)",
+              label: (c) => t("Net P&L: ") + "$" + c.parsed.y.toFixed(2),
+              afterLabel: (c) => (trades[c.dataIndex] || 0) + t(" trade(s)"),
             },
           },
         },
@@ -245,7 +247,7 @@
     return new Chart(ctx, {
       type: "doughnut",
       data: {
-        labels: ["Wins", "Losses", "Hedged"],
+        labels: [t("Wins"), t("Losses"), t("Hedged")],
         datasets: [{
           data: [wins, losses, hedged],
           backgroundColor: ["#3fb950", "#f85149", "#d29922"],
@@ -296,7 +298,7 @@
     toggleEmpty("equity", equityIsEmpty);
     toggleEmpty("bars", barsIsEmpty);
 
-    document.getElementById("bars-title").textContent = barsTitleByGrain[grain] || "P&L";
+    document.getElementById("bars-title").textContent = t(barsTitleByGrain[grain] || "P&L");
 
     const equityCanvas = document.getElementById("chart-equity");
     const barsCanvas = document.getElementById("chart-bars");
@@ -308,6 +310,7 @@
       } else {
         charts.equity.data.labels = equityLabels;
         charts.equity.data.datasets[0].data = equityValues;
+        charts.equity.data.datasets[0].label = t("Cumulative P&L");
         charts.equity.update();
       }
     }
@@ -318,6 +321,7 @@
       } else {
         charts.bars.data.labels = barLabels;
         charts.bars.data.datasets[0].data = barValues;
+        charts.bars.data.datasets[0].label = t("Net P&L");
         charts.bars.data.datasets[0].backgroundColor = barValues.map(v => v >= 0 ? "rgba(63, 185, 80, 0.5)" : "rgba(248, 81, 73, 0.5)");
         charts.bars.data.datasets[0].borderColor = barValues.map(v => v >= 0 ? "#3fb950" : "#f85149");
         charts.bars.update();
@@ -333,6 +337,7 @@
         charts.distribution = createDistributionChart(distCanvas, dist.wins, dist.losses, dist.hedged);
       } else {
         charts.distribution.data.datasets[0].data = [dist.wins, dist.losses, dist.hedged];
+        charts.distribution.data.labels = [t("Wins"), t("Losses"), t("Hedged")];
         charts.distribution.update();
       }
     }
@@ -352,6 +357,7 @@
 
   /* ── Render (tiles + charts) ────────────────────────────────── */
   function render(data) {
+    latestData = data;
     updateTiles(data.tiles);
     renderCharts(data);
   }
@@ -397,6 +403,7 @@
       return;
     }
     render(initial);
+    document.addEventListener("ui-languagechange", () => { if (latestData) render(latestData); });
     document.querySelectorAll(".period-toggle button").forEach(btn => {
       btn.addEventListener("click", () => switchPeriod(btn.dataset.period));
     });

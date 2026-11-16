@@ -2,8 +2,8 @@
 {% block title %}Dashboard — btcbot{% endblock %}
 
 {% block content %}
-<!-- Auto-refresh live section every 2 seconds -->
-<div hx-get="/partials/live" hx-trigger="every 2s" hx-swap="innerHTML">
+<!-- Auto-refresh live section every second -->
+<div hx-get="/partials/live" hx-trigger="every 1s" hx-swap="innerHTML">
   {% include "partials/live.html" %}
 </div>
 
@@ -30,6 +30,7 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+  const t = text => window.translateUI(text);
   const hourlyCtx = document.getElementById('hourlyChart');
   const cumulativeCtx = document.getElementById('cumulativeChart');
   if (!hourlyCtx || !cumulativeCtx) return;
@@ -54,12 +55,12 @@ document.addEventListener('DOMContentLoaded', function() {
         borderWidth: 1,
       };
 
-      new Chart(hourlyCtx, {
+      const hourlyChart = new Chart(hourlyCtx, {
         type: 'bar',
         data: {
           labels: labels,
           datasets: [{
-            label: 'Hourly P&L',
+            label: t('Hourly P&L'),
             data: values,
             backgroundColor: values.map(v => v >= 0 ? 'rgba(63, 185, 80, 0.4)' : 'rgba(248, 81, 73, 0.4)'),
             borderColor: values.map(v => v >= 0 ? '#3fb950' : '#f85149'),
@@ -83,19 +84,19 @@ document.addEventListener('DOMContentLoaded', function() {
             tooltip: {
               ...sharedTooltip,
               callbacks: {
-                afterLabel: function(ctx) { return trades[ctx.dataIndex] + ' trades'; }
+                afterLabel: function(ctx) { return trades[ctx.dataIndex] + t(' trades'); }
               }
             }
           }
         }
       });
 
-      new Chart(cumulativeCtx, {
+      const cumulativeChart = new Chart(cumulativeCtx, {
         type: 'line',
         data: {
           labels: labels,
           datasets: [{
-            label: 'Cumulative P&L',
+            label: t('Cumulative P&L'),
             data: cumulative,
             borderColor: '#58a6ff',
             borderWidth: 3,
@@ -124,6 +125,13 @@ document.addEventListener('DOMContentLoaded', function() {
             tooltip: sharedTooltip,
           }
         }
+      });
+
+      document.addEventListener('ui-languagechange', () => {
+        hourlyChart.data.datasets[0].label = t('Hourly P&L');
+        cumulativeChart.data.datasets[0].label = t('Cumulative P&L');
+        hourlyChart.update();
+        cumulativeChart.update();
       });
     });
 });

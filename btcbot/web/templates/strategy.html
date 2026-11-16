@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+{% block title %}Strategy Settings — btcbot{% endblock %}
+
+{% block content %}
+<div class="strategy-heading">
+  <div>
+    <h1 id="strategy-page-title">{{ strategy_options[selected_strategy][0] }}</h1>
+    <p>Select a strategy to view and edit its configuration.</p>
+  </div>
+  <span class="strategy-current {{ 'paper' if paper_mode else 'live' }}">{{ 'Paper trading' if paper_mode else 'Live trading' }}</span>
+</div>
+
+<form id="strategy-form" class="strategy-layout" data-guard-unsaved novalidate>
+  <div class="strategy-main">
+    <section class="strategy-section" aria-labelledby="strategy-choice-title">
+      <header class="section-heading"><h2 id="strategy-choice-title">Active strategy</h2><p>Switch between the two strategies. The selection is saved with the button on the right.</p></header>
+      <label class="strategy-field"><span>Strategy option</span>
+        <select id="strategy-select" name="strategy" aria-describedby="strategy-status">
+          {% for strategy_id, strategy in strategy_options.items() %}
+          <option value="{{ strategy_id }}" {% if selected_strategy == strategy_id %}selected{% endif %}>{{ strategy[0] }}</option>
+          {% endfor %}
+        </select>
+        <small id="strategy-status" role="status" aria-live="polite">Changes save with the button on the right. The selected strategy applies at the next market.</small>
+      </label>
+    </section>
+
+    <div id="momentum-config" {% if selected_strategy == 'paired_tilt_exit' %}hidden{% endif %}>
+    <section class="strategy-section" aria-labelledby="sizing-title">
+      <header class="section-heading"><h2 id="sizing-title">Position sizing</h2><p>Choose the size for each new entry. Orders above the USDC cap are rejected.</p></header>
+      <div class="strategy-fields">
+        <label class="strategy-field"><span>Position mode</span>
+          <select name="position_mode" id="position-mode">
+            <option value="fixed" {% if position_config.position_mode == 'fixed' %}selected{% endif %}>Fixed size</option>
+            <option value="dynamic" {% if position_config.position_mode == 'dynamic' %}selected{% endif %}>Quarter-Kelly</option>
+          </select>
+        </label>
+        <label class="strategy-field" id="fixed-type-field"><span>Fixed size unit</span>
+          <select name="fixed_size_type" id="fixed-size-type">
+            <option value="usd" {% if position_config.fixed_size_type == 'usd' %}selected{% endif %}>USDC amount</option>
+            <option value="shares" {% if position_config.fixed_size_type == 'shares' %}selected{% endif %}>Shares</option>
+          </select>
+        </label>
+        <label class="strategy-field" id="fixed-usd-field"><span>USDC per entry</span><input name="fixed_position_usd" type="number" min="0.01" step="0.01" required value="{{ position_config.fixed_position_usd }}"></label>
+        <label class="strategy-field" id="fixed-shares-field"><span>Shares per entry</span><input name="fixed_position_shares" type="number" min="0.01" step="0.01" required value="{{ position_config.fixed_position_shares }}"></label>
+        <label class="strategy-field" id="dynamic-min-field"><span>Quarter-Kelly minimum · USDC</span><input name="min_position_usd" type="number" min="0.01" step="0.01" required value="{{ position_config.min_position_usd }}"></label>
+        <label class="strategy-field"><span>Maximum position · USDC</span><input name="max_position_usd" type="number" min="0.01" step="0.01" required value="{{ position_config.max_position_usd }}"></label>
+        <label class="strategy-field" id="bankroll-field"><span>Kelly bankroll · USDC</span><input name="bankroll" type="number" min="0.01" step="0.01" required value="{{ position_config.bankroll }}"><small>Used by Quarter-Kelly sizing.</small></label>
+      </div>
+    </section>
+
+    <section class="strategy-section" aria-labelledby="entry-title">
+      <header class="section-heading"><h2 id="entry-title">Entry filters</h2><p>Adjust existing gates without changing the signal formula.</p></header>
+      <div class="strategy-fields">
+        <label class="strategy-field"><span>Minimum signal strength</span><div class="input-suffix"><input name="min_signal_strength_pct" type="number" min="0" max="100" step="1" required value="{{ position_config.min_signal_strength_pct }}"><span>%</span></div><small>Reject weaker signals.</small></label>
+        <label class="strategy-field"><span>Minimum edge</span><div class="input-suffix"><input name="min_edge_pct" type="number" min="0" max="100" step="0.1" required value="{{ position_config.min_edge_pct }}"><span>%</span></div><small>Existing regime adjustment still applies.</small></label>
+        <label class="strategy-field"><span>Lowest token price</span><div class="input-suffix"><span>$</span><input name="min_price_to_pay" type="number" min="0" max="1" step="0.01" required value="{{ position_config.min_price_to_pay }}"></div><small>$0.00 disables the lower bound.</small></label>
+        <label class="strategy-field"><span>Highest token price</span><div class="input-suffix"><span>$</span><input name="max_price_to_pay" type="number" min="0.01" max="1" step="0.01" required value="{{ position_config.max_price_to_pay }}"></div></label>
+      </div>
+    </section>
+
+    <section class="strategy-section" aria-labelledby="risk-title">
+      <header class="section-heading"><h2 id="risk-title">Risk limits</h2><p>Stop new entries when daily or consecutive-loss limits are reached.</p></header>
+      <div class="strategy-fields">
+        <label class="strategy-field"><span>Daily loss stop · USDC</span><input name="max_daily_loss_usd" type="number" min="0.01" step="0.01" required value="{{ position_config.max_daily_loss_usd }}"></label>
+        <label class="strategy-field"><span>Consecutive losses</span><input name="max_consecutive_losses" type="number" min="1" step="1" required value="{{ position_config.max_consecutive_losses }}"><small>Uses the existing cooldown behavior.</small></label>
+      </div>
+    </section>
+
+    <section class="strategy-section" aria-labelledby="hedge-title">
+      <header class="section-heading"><h2 id="hedge-title">Hedge protection</h2><p>Hedges keep the existing trigger and timing, with a per-order budget cap.</p></header>
+      <div class="strategy-fields">
+        <label class="strategy-toggle"><input name="hedge_enabled" id="hedge-enabled" type="checkbox" {% if position_config.hedge_enabled %}checked{% endif %}><span class="toggle-mark" aria-hidden="true"></span><span><strong>Enable hedging</strong><small>Use the existing trigger and safety guards.</small></span></label>
+        <label class="strategy-field" id="hedge-trigger-field"><span>Price drop trigger</span><div class="input-suffix"><input name="hedge_trigger_pct" type="number" min="0" max="100" step="1" required value="{{ position_config.hedge_trigger_pct }}"><span>%</span></div></label>
+        <label class="strategy-field"><span>Maximum hedge amount</span><div class="input-suffix"><span>$</span><input name="max_hedge_usd" type="number" min="0.01" step="0.01" required value="{{ position_config.max_hedge_usd }}"></div><small>Order amount cap; trading fees are separate.</small></label>
+      </div>
+    </section>
+
+    <section class="strategy-section" aria-labelledby="market-title">
+      <header class="section-heading"><h2 id="market-title">Market response</h2><p>Adjust volatility, timing and limit-price parameters already used by the bot.</p></header>
+      <div class="strategy-fields">
+        <label class="strategy-field"><span>Expected BTC volatility · 5 min</span><div class="input-suffix"><span>$</span><input name="btc_5m_volatility" type="number" min="0.01" step="0.1" required value="{{ position_config.btc_5m_volatility }}"></div></label>
+        <label class="strategy-field"><span>Regime lookback · markets</span><input name="regime_window" type="number" min="5" step="1" required value="{{ position_config.regime_window }}"></label>
+        <label class="strategy-field"><span>Warm-up · seconds</span><input name="warmup_sec" type="number" min="0" max="300" step="1" required value="{{ position_config.warmup_sec }}"></label>
+        <label class="strategy-field"><span>Entry cutoff · seconds remaining</span><input name="cooldown_sec" type="number" min="0" max="300" step="1" required value="{{ position_config.cooldown_sec }}"></label>
+        <label class="strategy-field"><span>Limit price offset</span><div class="input-suffix"><span>$</span><input name="limit_slippage" type="number" min="0" max="0.99" step="0.001" required value="{{ position_config.limit_slippage }}"></div><small>Added to the reference price.</small></label>
+      </div>
+    </section>
+    </div>
+
+    <div id="paired-config" {% if selected_strategy != 'paired_tilt_exit' %}hidden{% endif %}>
+      <section class="strategy-section" aria-labelledby="pair-entry-title">
+        <header class="section-heading">
+          <h2 id="pair-entry-title">Two-sided entry</h2>
+          <p>Orders use token shares. Both legs must pass price, depth and total-cost checks before they are submitted.</p>
+        </header>
+        <div class="strategy-fields">
+          <label class="strategy-field"><span>Base shares · Q</span>
+            <input name="paired_base_shares" id="paired-base-shares" type="number" min="0.01" step="0.01" required value="{{ paired_config.paired_base_shares }}">
+            <small>Each side starts at Q shares. A calibrated leader receives Q × (1 + tilt).</small>
+          </label>
+          <label class="strategy-field"><span>One-side share tilt</span>
+            <div class="input-suffix"><input name="paired_tilt_pct" id="paired-tilt-pct" type="number" min="0" max="100" step="0.1" required value="{{ paired_config.paired_tilt_pct }}"><span>%</span></div>
+            <small>Default 10%. The leader receives this percentage more tokens.</small>
+          </label>
+          <label class="strategy-field"><span>Maximum protected total cost · USDC</span>
+            <input name="paired_max_cost_usd" type="number" min="0.01" step="0.01" required value="{{ paired_config.paired_max_cost_usd }}">
+            <small>Includes the order price ceiling and modeled fees.</small>
+          </label>
+          <label class="strategy-field"><span>Maximum token entry price</span>
+            <div class="input-suffix"><span>$</span><input name="paired_max_price" type="number" min="0.01" max="0.99" step="0.01" required value="{{ paired_config.paired_max_price }}"></div>
+          </label>
+          <label class="strategy-field"><span>Minimum calibrated probability gap</span>
+            <div class="input-suffix"><input name="paired_tilt_gap_pct" type="number" min="0" max="99.9" step="0.1" required value="{{ paired_config.paired_tilt_gap_pct }}"><span>%</span></div>
+            <small>Below this gap, or without enough history, both sides stay at Q.</small>
+          </label>
+        </div>
+      </section>
+      <section class="strategy-section" aria-labelledby="exit-title">
+        <header class="section-heading">
+          <h2 id="exit-title">Last 60 seconds</h2>
+          <p>Exit rules stay fixed to the safety checks requested for this strategy.</p>
+        </header>
+        <div class="pair-exit-rules">
+          <p><strong>Sell the weak side</strong> only after eight aligned samples confirm direction, both books and price feeds are fresh, and net sale value beats calibrated settlement value.</p>
+          <p><strong>Hold both sides</strong> when momentum or odds reverse, the model is unclear, or calibration and liquidity are insufficient.</p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <aside class="strategy-aside">
+    <section id="momentum-preview" class="active-config" {% if selected_strategy == 'paired_tilt_exit' %}hidden{% endif %}>
+      <p class="aside-label">New entry size</p><h2 id="size-preview-title"></h2><p id="size-preview-detail" class="preview-detail"></p>
+      <div class="preview-rule"></div><p class="aside-label">Safety rails</p><p id="guard-preview" class="guard-preview"></p>
+    </section>
+    <section id="paired-preview" class="pair-preview" aria-live="polite" {% if selected_strategy != 'paired_tilt_exit' %}hidden{% endif %}>
+      <p class="aside-label">Share plan</p>
+      <div class="pair-plan-row"><span class="pair-side up">UP leads</span><strong id="up-plan">5.50 UP</strong><span id="up-other">5.00 DOWN</span></div>
+      <div class="pair-plan-row"><span class="pair-side down">DOWN leads</span><strong id="down-plan">5.50 DOWN</strong><span id="down-other">5.00 UP</span></div>
+      <p class="preview-detail">Tilt changes token count, not dollar allocation.</p>
+    </section>
+    <section class="save-panel">
+      <button class="primary-btn" type="submit">Save changes</button>
+      <button class="secondary-btn" type="reset">Discard edits</button>
+      <div id="settings-status" class="settings-status" role="status" aria-live="polite"></div>
+      <p>Changes and strategy selection save together. The selected strategy applies at the next market.</p>
+    </section>
+    <p class="local-only">Settings can be saved from this machine only.</p>
+  </aside>
+</form>
+
+<script>
+(() => {
+  const form = document.getElementById('strategy-form');
+  const status = document.getElementById('settings-status');
+  const strategy = document.getElementById('strategy-select');
+  const momentumConfig = document.getElementById('momentum-config');
+  const pairedConfig = document.getElementById('paired-config');
+  const momentumPreview = document.getElementById('momentum-preview');
+  const pairedPreview = document.getElementById('paired-preview');
+  const strategyTitle = document.getElementById('strategy-page-title');
+  const mode = document.getElementById('position-mode');
+  const sizeType = document.getElementById('fixed-size-type');
+  const hedgeToggle = document.getElementById('hedge-enabled');
+  const baseShares = document.getElementById('paired-base-shares');
+  const tiltPct = document.getElementById('paired-tilt-pct');
+  const saveButton = form.querySelector('button[type="submit"]');
+  const saveLabel = saveButton.textContent;
+  const toggle = (id, visible) => { document.getElementById(id).hidden = !visible; };
+  const snapshot = () => JSON.stringify([...form.elements]
+    .filter(element => element.name)
+    .map(element => [element.name, element.type === 'checkbox' ? element.checked : element.value]));
+  let savedSnapshot = snapshot();
+  const saveCurrentValuesAsDefaults = () => {
+    form.querySelectorAll('input').forEach(input => {
+      if (input.type === 'checkbox') input.defaultChecked = input.checked;
+      else input.defaultValue = input.value;
+    });
+    form.querySelectorAll('select').forEach(select => {
+      [...select.options].forEach(option => { option.defaultSelected = option.selected; });
+    });
+  };
+  const updateDirtyStatus = () => {
+    if (snapshot() !== savedSnapshot) {
+      status.textContent = 'Unsaved changes';
+      status.className = 'settings-status';
+    } else if (['Unsaved changes', '有未保存的更改'].includes(status.textContent)) {
+      status.textContent = '';
+    }
+  };
+  const update = () => {
+    const isPaired = strategy.value === 'paired_tilt_exit';
+    momentumConfig.hidden = isPaired;
+    pairedConfig.hidden = !isPaired;
+    momentumPreview.hidden = isPaired;
+    pairedPreview.hidden = !isPaired;
+    strategyTitle.textContent = strategy.options[strategy.selectedIndex].text;
+    const fixed = mode.value === 'fixed';
+    toggle('fixed-type-field', fixed);
+    toggle('fixed-usd-field', fixed && sizeType.value === 'usd');
+    toggle('fixed-shares-field', fixed && sizeType.value === 'shares');
+    toggle('dynamic-min-field', !fixed);
+    toggle('bankroll-field', !fixed);
+    toggle('hedge-trigger-field', hedgeToggle.checked);
+    document.getElementById('size-preview-title').textContent = fixed ? (sizeType.value === 'usd' ? 'Fixed USDC' : 'Fixed shares') : 'Quarter-Kelly';
+    document.getElementById('size-preview-detail').textContent = fixed
+      ? (sizeType.value === 'usd' ? `$${form.elements.fixed_position_usd.value} per entry` : `${form.elements.fixed_position_shares.value} shares per entry`)
+      : `$${form.elements.min_position_usd.value}–$${form.elements.max_position_usd.value} per entry`;
+    document.getElementById('guard-preview').textContent = `Max $${form.elements.max_position_usd.value} · daily stop $${form.elements.max_daily_loss_usd.value}`;
+    const q = Math.max(0, Number(baseShares.value) || 0);
+    const tiltedShares = q * (1 + Math.max(0, Number(tiltPct.value) || 0) / 100);
+    document.getElementById('up-plan').textContent = `${tiltedShares.toFixed(2)} UP`;
+    document.getElementById('up-other').textContent = `${q.toFixed(2)} DOWN`;
+    document.getElementById('down-plan').textContent = `${tiltedShares.toFixed(2)} DOWN`;
+    document.getElementById('down-other').textContent = `${q.toFixed(2)} UP`;
+  };
+  form.addEventListener('input', () => { update(); updateDirtyStatus(); });
+  form.addEventListener('change', () => { update(); updateDirtyStatus(); });
+  form.addEventListener('reset', () => setTimeout(() => {
+    update();
+    updateDirtyStatus();
+    status.textContent = '';
+    status.className = 'settings-status';
+  }));
+  update();
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const payload = Object.fromEntries(new FormData(form));
+    payload.hedge_enabled = hedgeToggle.checked;
+    for (const key of ['fixed_position_usd', 'fixed_position_shares', 'min_position_usd', 'max_position_usd', 'bankroll', 'min_signal_strength_pct', 'min_edge_pct', 'btc_5m_volatility', 'limit_slippage', 'max_daily_loss_usd', 'max_consecutive_losses', 'min_price_to_pay', 'max_price_to_pay', 'hedge_trigger_pct', 'max_hedge_usd', 'regime_window', 'warmup_sec', 'cooldown_sec', 'paired_base_shares', 'paired_tilt_pct', 'paired_max_cost_usd', 'paired_max_price', 'paired_tilt_gap_pct']) payload[key] = Number(payload[key]);
+    status.textContent = 'Saving…';
+    status.className = 'settings-status';
+    saveButton.disabled = true;
+    saveButton.textContent = 'Saving…';
+    try {
+      const response = await fetch('/api/settings/strategy-config', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Could not save settings');
+      saveCurrentValuesAsDefaults();
+      savedSnapshot = snapshot();
+      form.dispatchEvent(new Event('settings:saved'));
+      status.textContent = 'Saved · selected strategy applies at the next market';
+      status.classList.add('success');
+    } catch (error) {
+      status.textContent = error.message;
+      status.classList.add('error');
+    } finally {
+      saveButton.disabled = false;
+      saveButton.textContent = saveLabel;
+    }
+  });
+})();
+</script>
+{% endblock %}

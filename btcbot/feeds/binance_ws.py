@@ -41,6 +41,10 @@ class BinanceFeed:
                 return price
         return None
 
+    def prices_since(self, timestamp: float) -> list[tuple[float, float]]:
+        """Return retained ticks from a market's start for delayed activation."""
+        return [(ts, price) for ts, price in self._prices if ts >= timestamp]
+
     def _calc_momentum(self, seconds: float) -> float:
         now = time.time()
         cutoff = now - seconds

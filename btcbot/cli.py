@@ -23,17 +23,19 @@ def _setup_logging(verbose: bool) -> None:
 
 @app.command()
 def run(
-    paper: bool = typer.Option(True, "--paper/--live", help="Paper (default) or live trading"),
+    paper: bool | None = typer.Option(None, "--paper/--live", help="Override BOT_PAPER_MODE"),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Start the trading bot headless (no dashboard)."""
     _setup_logging(verbose)
     import os
 
-    os.environ["BOT_PAPER_MODE"] = "true" if paper else "false"
+    if paper is not None:
+        os.environ["BOT_PAPER_MODE"] = "true" if paper else "false"
+    from .config import CONFIG
     from .engine import Engine
 
-    engine = Engine(paper_mode=paper)
+    engine = Engine(paper_mode=CONFIG.paper_mode)
     try:
         asyncio.run(engine.run())
     except KeyboardInterrupt:
@@ -44,7 +46,7 @@ def run(
 def serve(
     host: str = typer.Option(None, help="Bind address (default from BOT_HOST)"),
     port: int = typer.Option(None, help="Port (default from BOT_PORT)"),
-    paper: bool = typer.Option(True, "--paper/--live", help="Paper (default) or live trading"),
+    paper: bool | None = typer.Option(None, "--paper/--live", help="Override BOT_PAPER_MODE"),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on file changes"),
 ) -> None:
@@ -53,9 +55,9 @@ def serve(
     import os
     import uvicorn
 
-    # Uvicorn reloads the app module from scratch, so pass paper mode via env
-    # var — must be set before CONFIG import triggers lazy load_config().
-    os.environ["BOT_PAPER_MODE"] = "true" if paper else "false"
+    # Resolve explicit flags before CONFIG reads the persisted mode.
+    if paper is not None:
+        os.environ["BOT_PAPER_MODE"] = "true" if paper else "false"
 
     from .config import CONFIG
 
@@ -99,9 +101,10 @@ async def _show_status() -> None:
         typer.echo(f"\n  Last {len(trades)} trades:")
         for t in trades:
             paper_tag = " [paper]" if t.is_paper else ""
+            net_edge = t.signal_net_edge if t.signal_net_edge is not None else t.signal_edge
             typer.echo(
                 f"  {t.trade_type:<6} {t.direction:<4} @ ${t.fill_price:.3f}  "
-                f"${t.amount_usd:.2f}  edge={t.signal_edge or 0:+.3f}{paper_tag}"
+                f"${t.amount_usd:.2f}  net_edge={net_edge or 0:+.3f}{paper_tag}"
             )
     typer.echo()
 

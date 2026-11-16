@@ -45,6 +45,9 @@ class TradeRow:
     order_id: str | None
     signal_strength: float | None
     signal_edge: float | None
+    signal_fair_prob: float | None
+    signal_net_edge: float | None
+    fee_usd: float
     is_paper: bool
     created_at: int
 
@@ -82,7 +85,9 @@ async def upsert_market(conn: aiosqlite.Connection, market: Market) -> None:
            ON CONFLICT(slug) DO UPDATE SET
                condition_id = excluded.condition_id,
                up_token_id  = excluded.up_token_id,
-               down_token_id = excluded.down_token_id
+               down_token_id = excluded.down_token_id,
+               start_ts = excluded.start_ts,
+               end_ts = excluded.end_ts
         """,
         (
             market.slug,
@@ -135,8 +140,9 @@ async def insert_trade(conn: aiosqlite.Connection, t: TradeRecord) -> int:
         """INSERT INTO trades
            (market_slug, trade_type, direction, token_id, side,
             amount_usd, fill_price, token_quantity, order_id,
-            signal_strength, signal_edge, is_paper, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            signal_strength, signal_edge, signal_fair_prob, signal_net_edge,
+            fee_usd, is_paper, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             t.market_slug,
             t.trade_type,
@@ -149,6 +155,9 @@ async def insert_trade(conn: aiosqlite.Connection, t: TradeRecord) -> int:
             t.order_id,
             t.signal_strength,
             t.signal_edge,
+            t.signal_fair_prob,
+            t.signal_net_edge,
+            t.fee_usd,
             int(t.is_paper),
             t.created_at,
         ),
@@ -167,12 +176,44 @@ async def trades_for_market(
 
 
 async def recent_trades(
-    conn: aiosqlite.Connection, limit: int = 50
+    conn: aiosqlite.Connection, limit: int = 50, offset: int = 0
 ) -> list[TradeRow]:
     cur = await conn.execute(
-        "SELECT * FROM trades ORDER BY created_at DESC LIMIT ?", (limit,)
+        "SELECT * FROM trades ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
     )
     return [TradeRow(**dict(r)) for r in await cur.fetchall()]
+
+
+async def trade_counts(conn: aiosqlite.Connection) -> tuple[int, int, int]:
+    cur = await conn.execute(
+        """SELECT COUNT(*),
+                  SUM(CASE WHEN trade_type = 'ENTRY' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN trade_type = 'HEDGE' THEN 1 ELSE 0 END)
+           FROM trades"""
+    )
+    total, entries, hedges = await cur.fetchone()
+    return int(total), int(entries or 0), int(hedges or 0)
+
+
+async def paper_cash_balance(conn: aiosqlite.Connection, bankroll: float) -> float:
+    """Return simulated cash after purchases, sells, and resolved payouts."""
+    cur = await conn.execute(
+        """SELECT
+             COALESCE(SUM(CASE WHEN t.trade_type IN ('ENTRY', 'HEDGE')
+                               THEN t.amount_usd + t.fee_usd ELSE 0 END), 0),
+             COALESCE(SUM(CASE WHEN t.trade_type = 'EXIT'
+                               THEN t.amount_usd - t.fee_usd ELSE 0 END), 0),
+             COALESCE(SUM(CASE WHEN m.resolved_at IS NOT NULL AND m.outcome = t.direction
+                               THEN CASE WHEN t.side = 'BUY' THEN t.token_quantity
+                                         WHEN t.side = 'SELL' THEN -t.token_quantity
+                                         ELSE 0 END ELSE 0 END), 0)
+           FROM trades t
+           LEFT JOIN markets m ON m.slug = t.market_slug
+           WHERE t.is_paper = 1"""
+    )
+    spent, proceeds, payout = await cur.fetchone()
+    return bankroll - float(spent) + float(proceeds) + float(payout)
 
 
 # ── Live stats (queried from trades + market_results directly) ─────────
@@ -370,19 +411,6 @@ async def insert_btc_price(
     await conn.commit()
 
 
-# ── Poly prices ────────────────────────────────────────────────────────
-
-
-async def insert_poly_price(
-    conn: aiosqlite.Connection, token_id: str, price: float, ts: int | None = None
-) -> None:
-    await conn.execute(
-        "INSERT INTO poly_prices (token_id, ts, price) VALUES (?, ?, ?)",
-        (token_id, ts or int(time.time()), price),
-    )
-    await conn.commit()
-
-
 # ── System state ───────────────────────────────────────────────────────
 
 
@@ -398,6 +426,7 @@ async def save_open_position(
     hedge_amount_usd: float = 0.0,
     hedge_token_quantity: float = 0.0,
     hedge_fill_price: float | None = None,
+    strategy_id: str = "btc_momentum_regime",
 ) -> None:
     """Persist the current open position so it survives restarts."""
     payload = json.dumps({
@@ -411,23 +440,84 @@ async def save_open_position(
         "hedge_amount_usd": hedge_amount_usd,
         "hedge_token_quantity": hedge_token_quantity,
         "hedge_fill_price": hedge_fill_price,
+        "strategy_id": strategy_id,
     })
-    await set_state(conn, "open_position", payload)
+    await conn.execute(
+        "DELETE FROM system_state WHERE key = ?", (f"open_position:{market_slug}",)
+    )
+    legacy = await get_state(conn, "open_position")
+    if legacy:
+        try:
+            if json.loads(legacy[0]).get("market_slug") == market_slug:
+                await conn.execute("DELETE FROM system_state WHERE key = ?", ("open_position",))
+        except (TypeError, json.JSONDecodeError):
+            pass
+    await set_state(conn, f"open_position:{market_slug}:{token_id}", payload)
 
 
 async def load_open_position(
     conn: aiosqlite.Connection,
 ) -> dict | None:
-    """Load persisted open position, or None if no position is saved."""
-    result = await get_state(conn, "open_position")
-    if result is None:
-        return None
-    return json.loads(result[0])
+    """Load the newest persisted open position for legacy callers."""
+    positions = await load_open_positions(conn)
+    return max(positions, key=lambda item: item.get("entry_time", 0), default=None)
 
 
-async def clear_open_position(conn: aiosqlite.Connection) -> None:
-    """Remove persisted open position (after resolution or cleanup)."""
-    await conn.execute("DELETE FROM system_state WHERE key = ?", ("open_position",))
+async def load_open_positions(conn: aiosqlite.Connection) -> list[dict]:
+    """Load per-market positions and the pre-migration singleton if present."""
+    cur = await conn.execute(
+        "SELECT value FROM system_state WHERE key = 'open_position' OR key LIKE 'open_position:%'"
+    )
+    positions: dict[tuple[str, str], dict] = {}
+    for row in await cur.fetchall():
+        try:
+            position = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if position.get("market_slug"):
+            positions[(position["market_slug"], position.get("token_id", ""))] = position
+    return list(positions.values())
+
+
+async def clear_open_position(
+    conn: aiosqlite.Connection, market_slug: str | None = None, token_id: str | None = None
+) -> None:
+    """Remove one market position, or the legacy singleton when no slug is given."""
+    if market_slug is None:
+        await conn.execute("DELETE FROM system_state WHERE key = ?", ("open_position",))
+    else:
+        if token_id is not None:
+            await conn.execute(
+                "DELETE FROM system_state WHERE key = ?",
+                (f"open_position:{market_slug}:{token_id}",),
+            )
+            legacy = await get_state(conn, f"open_position:{market_slug}")
+            if legacy:
+                try:
+                    if json.loads(legacy[0]).get("token_id") == token_id:
+                        await conn.execute(
+                            "DELETE FROM system_state WHERE key = ?",
+                            (f"open_position:{market_slug}",),
+                        )
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            await conn.commit()
+            return
+        cur = await conn.execute("SELECT key FROM system_state WHERE key LIKE 'open_position%'")
+        keys = [
+            row[0] for row in await cur.fetchall()
+            if row[0] == f"open_position:{market_slug}"
+            or row[0].startswith(f"open_position:{market_slug}:")
+        ]
+        for key in keys:
+            await conn.execute("DELETE FROM system_state WHERE key = ?", (key,))
+        legacy = await get_state(conn, "open_position")
+        if legacy:
+            try:
+                if json.loads(legacy[0]).get("market_slug") == market_slug:
+                    await conn.execute("DELETE FROM system_state WHERE key = ?", ("open_position",))
+            except (TypeError, json.JSONDecodeError):
+                pass
     await conn.commit()
 
 
@@ -512,9 +602,9 @@ async def oldest_resolved_at(conn: aiosqlite.Connection) -> int | None:
 
 
 async def stats_summary(
-    conn: aiosqlite.Connection, since_ts: int
+    conn: aiosqlite.Connection, since_ts: int, until_ts: int | None = None
 ) -> StatsSummaryRow:
-    """Aggregate market_results for rows with resolved_at >= since_ts."""
+    """Aggregate market_results resolved within [since_ts, until_ts)."""
     cur = await conn.execute(
         """SELECT
              COALESCE(SUM(net_pnl_usd), 0.0) AS net_pnl,
@@ -523,8 +613,8 @@ async def stats_summary(
              COALESCE(SUM(CASE WHEN outcome_correct = 0 THEN 1 ELSE 0 END), 0) AS losses,
              COALESCE(SUM(CASE WHEN outcome_correct IS NULL THEN 1 ELSE 0 END), 0) AS hedged
            FROM market_results
-           WHERE resolved_at >= ?""",
-        (since_ts,),
+           WHERE resolved_at >= ? AND (? IS NULL OR resolved_at < ?)""",
+        (since_ts, until_ts, until_ts),
     )
     row = await cur.fetchone()
     net_pnl = float(row["net_pnl"])
@@ -540,9 +630,9 @@ async def stats_summary(
     if trades > 0:
         cur_best = await conn.execute(
             """SELECT market_slug, net_pnl_usd FROM market_results
-               WHERE resolved_at >= ?
+               WHERE resolved_at >= ? AND (? IS NULL OR resolved_at < ?)
                ORDER BY net_pnl_usd DESC LIMIT 1""",
-            (since_ts,),
+            (since_ts, until_ts, until_ts),
         )
         brow = await cur_best.fetchone()
         if brow is not None:
@@ -550,9 +640,9 @@ async def stats_summary(
 
         cur_worst = await conn.execute(
             """SELECT market_slug, net_pnl_usd FROM market_results
-               WHERE resolved_at >= ?
+               WHERE resolved_at >= ? AND (? IS NULL OR resolved_at < ?)
                ORDER BY net_pnl_usd ASC LIMIT 1""",
-            (since_ts,),
+            (since_ts, until_ts, until_ts),
         )
         wrow = await cur_worst.fetchone()
         if wrow is not None:

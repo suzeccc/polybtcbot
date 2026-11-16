@@ -64,10 +64,11 @@ cd polybtcbot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 btcbot initdb
-btcbot serve --paper -v
+btcbot serve -v
 ```
 
 Open [http://localhost:8500](http://localhost:8500) — the dashboard shows live BTC prices, market odds, signals, and P&L in real-time.
+Paper and Live USDC balances appear in the top-right header; Live balance requires `BOT_PRIVATE_KEY` and reads the authenticated Polymarket wallet, including email-login Deposit Wallets.
 
 > [!NOTE]
 > Paper mode (default) simulates trades using real market data. No wallet or API keys needed.
@@ -116,22 +117,23 @@ The bot tracks a rolling window of the last 20 markets and measures how often th
 | Consecutive losses | 5 | Pauses after 5 straight losses |
 | Price cap | $0.65 | Never pays more than the configured token cap |
 | Hedge trigger | 15% drop | Triggers at a percentage drop from entry price, once per market |
-| Hedge time guard | Last 150s | Only hedges in the second half of the market window |
-| Hedge price guard | opposite < $0.85 | Skips hedge if the opposite token is too expensive |
+| Hedge time guard | Last 120s | Starts checking at 120s remaining and continues until the market closes |
+| Hedge price guard | opposite < $0.85 | At/above $0.845, bypasses the drop threshold in the final 90s |
+| Hedge amount cap | $30 | Caps one hedge order; fees are separate |
 
 ### How Hedging Works
 
 If you buy "Up" at $0.55 and BTC reverses:
 
 - **Without hedge**: Market resolves "Down" → you lose $0.55 per token (100%)
-- **With hedge**: Buy "Down" once after a confirmed drawdown in the second half of the window → holds both sides → loss is capped to the spread between entry and hedge prices
+- **With hedge**: Buy the opposite side after a confirmed drawdown in the last 120 seconds, or bypass the drawdown threshold when the opposite token reaches $0.845 in the final 90 seconds. The $30 budget cap may make protection partial.
 
 ## Dashboard
 
 Start the dashboard with:
 
 ```bash
-btcbot serve --paper -v
+btcbot serve -v
 ```
 
 ![btcbot dashboard](assets/polybtcbot.png)
@@ -142,6 +144,8 @@ btcbot serve --paper -v
 | Trades | `/trades` | Full trade log with win/loss/hedge badges and execution details |
 | History | `/history` | Daily P&L breakdown, cumulative equity curve, win rate stats |
 | Stats | `/stats` | Day/week/month/all-time P&L rollups with equity curve, per-bucket P&L bars, and win/loss/hedged distribution |
+| Settings | `/settings` | Paper starting balance, saved Paper/Live mode, and local Polymarket wallet key setup |
+| Strategy | `/strategy` | Select either strategy from one dropdown; the configuration below changes with the selection |
 
 The dashboard auto-refreshes via [htmx](https://htmx.org) — status panels update every 2 seconds, the trade table every 5 seconds. The Stats page uses a period toggle that redraws Chart.js instances in place without a full reload.
 
@@ -176,22 +180,82 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `BOT_BANKROLL` | `100.0` | Total trading capital (USD) |
+| `BOT_BANKROLL` | `100.0` | Simulated account starting balance and Quarter-Kelly bankroll (USDC) |
 | `BOT_MIN_SIGNAL_STRENGTH` | `0.30` | Minimum signal confidence (0–1) |
 | `BOT_MIN_EDGE` | `0.05` | Minimum edge to enter (5%) |
 | `BOT_BTC_5M_VOLATILITY` | `30.0` | Expected 5-min BTC volatility ($) |
 | `BOT_LIMIT_SLIPPAGE` | `0.02` | Slippage tolerance for limit orders |
+| `BOT_STRATEGY` | `btc_momentum_regime` | Registered signal strategy ID |
+
+### Position sizing
+
+| Variable | Default | Description |
+|---|---|---|
+| `BOT_POSITION_MODE` | `fixed` | `fixed` or `dynamic` (Quarter-Kelly) |
+| `BOT_FIXED_SIZE_TYPE` | `usd` | `usd` or `shares` when position mode is fixed |
+| `BOT_FIXED_POSITION_USD` | `2.0` | Target USDC per fixed-USD entry |
+| `BOT_FIXED_POSITION_SHARES` | `5` | Target Shares per fixed-shares entry |
+| `BOT_PAIRED_BASE_SHARES` | `5` | Base Q shares per side for `paired_tilt_exit` |
+| `BOT_PAIRED_TILT_PCT` | `10` | Extra token shares for the calibrated leader; `10` means `1.1 × Q` |
+| `BOT_PAIRED_MAX_COST_USD` | `10.0` | Maximum protected combined cost of both entry legs, including modeled fees |
+| `BOT_PAIRED_MAX_PRICE` | `0.65` | Highest allowed ask including the configured limit offset |
+| `BOT_PAIRED_TILT_GAP` | `0.03` | Minimum calibrated win-probability difference before applying the share tilt |
+| `BOT_MIN_POSITION_USD` | `2.0` | Dynamic-mode minimum position |
+| `BOT_MAX_POSITION_USD` | `5.0` | Dynamic-mode maximum; also caps fixed entries |
+
+Copy `.env.example` to `.env` for a Paper-mode setup. The dashboard has one
+**Strategy** page with a dropdown; choosing a strategy switches the settings
+shown below it. Save with the button on the right. Strategy selection applies
+at the next market boundary. The **BTC Momentum + Regime** settings include
+position, signal, price, risk, hedge, timing, volatility, and limit-offset
+controls. Register implementations in
+`btcbot/strategies.py`. Settings pages are available from localhost only.
+
+The separate **Settings** page manages the simulated starting balance, the
+Paper/Live startup mode, and the Polymarket wallet key. Balance changes apply
+immediately; account and mode changes apply after restart. The key is stored in
+the local `.env` file and is never shown by the dashboard. Restart with
+`btcbot serve` (without `--paper` or `--live`) to use the saved `BOT_PAPER_MODE`;
+explicit mode flags override it.
+
+The optional `paired_tilt_exit` strategy buys both tokens in shares, checks
+visible ask depth and the combined cost cap, and shows the two settlement P&L
+scenarios before entry. Its configurable share tilt defaults to 10%; for
+example, a 10% tilt buys `1.1 × Q` for the calibrated leader and `Q` for the
+other side. It considers last-minute exits only when a 5% historical
+calibration bucket has at least 20 resolved-market samples. With sparse
+calibration, it uses equal shares and holds both sides; this is deliberately
+conservative. Review calibration with `python calibration.py --mode all`.
+
+Fixed-USD orders convert the USDC target to Shares at execution; fixed-Shares
+orders submit that Shares quantity. Dynamic mode keeps the existing
+Quarter-Kelly calculation and applies the configured minimum and maximum. Entry
+orders above the maximum, with insufficient USDC, or below the market's minimum
+Shares are rejected. Hedges target the existing position size but are capped by
+`BOT_MAX_HEDGE_USD`; when the cap binds, the bot buys a partial hedge. The
+existing momentum strategy exits through market resolution and redemption;
+`paired_tilt_exit` also submits a protected SELL only after persistent direction
+confirmation, fresh depth, and a calibrated expected-value comparison. A
+two-token entry is not risk-free: fees, spread, execution, and the final outcome
+can produce a loss. The two CLOB entry orders execute sequentially, so if live
+liquidity changes after preflight, a filled leg can remain without its pair;
+the bot tracks that fill and still applies the last-minute exit rules.
+
+For an existing `.env` that explicitly sets `BOT_MAX_POSITION_USD` but has no
+`BOT_POSITION_MODE`, the bot keeps the prior dynamic sizing behavior. New
+configurations use the fixed defaults shown in `.env.example`.
 
 ### Risk
 
 | Variable | Default | Description |
 |---|---|---|
-| `BOT_MAX_POSITION_USD` | `25.0` | Max bet per trade |
-| `BOT_MIN_POSITION_USD` | `2.0` | Min bet per trade |
+| `BOT_MAX_POSITION_USD` | `5.0` | Maximum bet per trade |
+| `BOT_MIN_POSITION_USD` | `2.0` | Minimum dynamic-mode bet |
 | `BOT_MAX_DAILY_LOSS_USD` | `50.0` | Daily stop-loss |
 | `BOT_MAX_CONSECUTIVE_LOSSES` | `5` | Pause after N straight losses |
 | `BOT_MAX_PRICE_TO_PAY` | `0.65` | Max token price to buy |
 | `BOT_HEDGE_TRIGGER` | `0.15` | Hedge when the held token drops 15% from entry price |
+| `BOT_MAX_HEDGE_USD` | `30.0` | Maximum notional amount for one hedge order; fees are separate |
 
 ### Regime Detection
 
@@ -203,7 +267,10 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `BOT_DISCOVERY_INTERVAL_SEC` | `30.0` | Market discovery poll interval |
+| `BOT_DISCOVERY_INTERVAL_SEC` | `5.0` | Market discovery poll interval |
+| `BOT_DISCOVERY_LOOKAHEAD_SEC` | `1800.0` | How far ahead to scan 5-minute BTC markets |
+| `BOT_DISCOVERY_MAX_BACKOFF_SEC` | `60.0` | Maximum discovery retry delay after API errors |
+| `BOT_MARKET_DATA_MAX_AGE_SEC` | `15.0` | Maximum age for order-book, Binance, and Chainlink data used for trading |
 | `BOT_WARMUP_SEC` | `30.0` | No-trade warmup period |
 | `BOT_COOLDOWN_SEC` | `60.0` | No-entry cooldown before resolution |
 | `BOT_RISK_CHECK_SEC` | `2.0` | Hedge-check interval |
@@ -238,7 +305,6 @@ This profile is designed to reduce low-quality entries and over-hedging while me
 
 | Variable | Default |
 |---|---|
-| `BOT_CLOB_API` | `https://clob.polymarket.com` |
 | `BOT_GAMMA_API` | `https://gamma-api.polymarket.com` |
 | `BOT_CLOB_WS` | `wss://ws-subscriptions-clob.polymarket.com/ws/market` |
 | `BOT_BINANCE_WS` | `wss://stream.binance.com:9443/ws/btcusdt@trade` |
@@ -269,7 +335,7 @@ btcbot/
 ├── signal.py              # Sigmoid probability model with regime-aware clamping
 ├── risk.py                # Kelly sizing + safety limits + dynamic hedge threshold
 ├── regime.py              # Regime detector — trending vs mean-reverting classification
-├── execution.py           # py-clob-client order placement
+├── execution.py           # Polymarket unified SDK order placement
 ├── paper.py               # Simulated executor
 ├── market_discovery.py    # Gamma API polling
 ├── feeds/
@@ -291,15 +357,16 @@ btcbot/
 | Task | Frequency | Role |
 |---|---|---|
 | `binance_ws` | Continuous | Stream BTC price ticks |
-| `polymarket_ws` | Continuous | Stream market odds |
-| `discovery` | Every 30s | Find active 5-minute market |
+| `polymarket_ws` | Continuous | Stream and maintain books for current and prepared market tokens |
+| `discovery` | Every 5s | Find current and upcoming markets for the next 30 minutes |
+| `market_manager` | Boundary-driven | Activate READY markets and retire expired markets |
 | `trading` | On price event | Evaluate signal, place trade |
 | `risk` | Every 2s | Check hedge conditions for the active position |
 | `sweep` | Every 5m | Resolve ended markets that were missed in the main flow |
 
 ### Database
 
-SQLite with WAL mode. All trades, market outcomes, daily P&L, and price samples are persisted.
+SQLite with WAL mode. Trades, market outcomes, daily P&L, and BTC price samples are persisted.
 
 | Table | Content |
 |---|---|
@@ -308,7 +375,6 @@ SQLite with WAL mode. All trades, market outcomes, daily P&L, and price samples 
 | `market_results` | Per-market P&L with win/loss or hedged classification |
 | `daily_pnl` | Aggregated daily statistics |
 | `btc_prices` | BTC price samples (every 5s) |
-| `poly_prices` | Polymarket token price snapshots |
 
 ## Testing
 

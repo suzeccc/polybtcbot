@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS trades (
     order_id        TEXT,
     signal_strength REAL,
     signal_edge     REAL,
+    signal_fair_prob REAL,
+    signal_net_edge REAL,
+    fee_usd         REAL NOT NULL DEFAULT 0,
     is_paper        INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL
 );
@@ -66,14 +69,6 @@ CREATE TABLE IF NOT EXISTS btc_prices (
 );
 
 CREATE INDEX IF NOT EXISTS idx_btc_prices_ts ON btc_prices(ts);
-
-CREATE TABLE IF NOT EXISTS poly_prices (
-    token_id        TEXT NOT NULL,
-    ts              INTEGER NOT NULL,
-    price           REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_poly_prices ON poly_prices(token_id, ts);
 
 CREATE TABLE IF NOT EXISTS system_state (
     key             TEXT PRIMARY KEY,

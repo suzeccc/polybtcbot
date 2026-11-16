@@ -17,6 +17,10 @@ class Market:
     down_token_id: str
     start_ts: int
     end_ts: int
+    active: bool = True
+    closed: bool = False
+    accepting_orders: bool = True
+    enable_order_book: bool = True
 
     @property
     def seconds_remaining(self) -> float:
@@ -29,7 +33,11 @@ class Market:
     @property
     def is_active(self) -> bool:
         now = time.time()
-        return self.start_ts <= now <= self.end_ts
+        return self.start_ts <= now < self.end_ts
+
+    @property
+    def is_tradable(self) -> bool:
+        return self.active and not self.closed and self.accepting_orders and self.enable_order_book
 
     def token_id_for(self, direction: str) -> str:
         return self.up_token_id if direction == "UP" else self.down_token_id
@@ -46,6 +54,14 @@ class Signal:
     poly_implied_prob: float  # what Polymarket thinks
     fair_prob: float          # what we think
     reason: str
+    expected_entry_price: float | None = None
+    estimated_entry_cost_per_share: float | None = None
+    probability_up: float | None = None
+
+    @property
+    def net_edge(self) -> float:
+        cost = self.estimated_entry_cost_per_share
+        return self.edge if cost is None else self.fair_prob - cost
 
 
 @dataclass
@@ -53,7 +69,7 @@ class TradeRecord:
     """A single executed trade (entry, hedge, or exit)."""
 
     market_slug: str
-    trade_type: Literal["ENTRY", "HEDGE"]
+    trade_type: Literal["ENTRY", "HEDGE", "EXIT"]
     direction: Literal["UP", "DOWN"]
     token_id: str
     side: Literal["BUY", "SELL"]
@@ -65,6 +81,9 @@ class TradeRecord:
     order_id: str = ""
     is_paper: bool = False
     created_at: int = field(default_factory=lambda: int(time.time()))
+    signal_fair_prob: float | None = None
+    signal_net_edge: float | None = None
+    fee_usd: float = 0.0
 
 
 @dataclass
@@ -81,6 +100,7 @@ class OpenPosition:
     hedge_amount_usd: float = 0.0
     hedge_token_quantity: float = 0.0
     hedge_fill_price: float | None = None
+    strategy_id: str = "btc_momentum_regime"
 
     @property
     def is_hedged(self) -> bool:

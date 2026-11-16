@@ -200,7 +200,7 @@ class TestHedging:
         assert risk.should_hedge(position, 50000, poly, opposite_price=0.65) is True
 
     def test_blocks_hedge_too_early(self, risk: RiskManager):
-        """Don't hedge when more than 150s remain — price can still recover."""
+        """Don't hedge before the last 120s — price can still recover."""
         now = int(time.time())
         early_market = Market(
             slug="btc-updown-5m-early",

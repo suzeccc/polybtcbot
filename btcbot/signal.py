@@ -7,6 +7,7 @@ import time
 from collections import deque
 
 from .config import CONFIG
+from .fees import taker_fee_per_share
 from .models import Market, Signal
 
 
@@ -52,6 +53,7 @@ class SignalGenerator:
         poly_down_price: float | None,
         time_remaining_sec: float,
         choppiness: float = 0.0,
+        apply_time_gate: bool = True,
     ) -> Signal:
         """Core signal logic.
 
@@ -82,37 +84,64 @@ class SignalGenerator:
             price_delta, mom_5s, mom_15s, time_remaining_sec, choppiness
         )
 
-        # 4. Compare to Polymarket implied probability
+        # Compare each side at the configured limit price, including estimated taker fee.
+        entry_price_up = min(poly_up_price + CONFIG.limit_slippage, 0.99)
+        entry_cost_up = entry_price_up + taker_fee_per_share(entry_price_up)
+        entry_price_down = min(poly_down_price + CONFIG.limit_slippage, 0.99)
+        entry_cost_down = entry_price_down + taker_fee_per_share(entry_price_down)
         edge_up = fair_prob_up - poly_up_price
         edge_down = (1.0 - fair_prob_up) - poly_down_price
+        net_edge_up = fair_prob_up - entry_cost_up
+        net_edge_down = (1.0 - fair_prob_up) - entry_cost_down
 
-        # 5. Pick the side with the bigger edge
-        if edge_up >= edge_down:
+        # Pick the side with the better expected value after estimated costs.
+        if net_edge_up >= net_edge_down:
             direction = "UP"
             edge = edge_up
+            net_edge = net_edge_up
             fair_p = fair_prob_up
             poly_p = poly_up_price
+            entry_price = entry_price_up
+            entry_cost = entry_cost_up
         else:
             direction = "DOWN"
             edge = edge_down
+            net_edge = net_edge_down
             fair_p = 1.0 - fair_prob_up
             poly_p = poly_down_price
+            entry_price = entry_price_down
+            entry_cost = entry_cost_down
 
-        # 6. Signal strength (0..1)
-        strength = self._calc_strength(
-            edge,
-            price_delta,
+        # Block large countertrend entries unless short-term momentum confirms the reversal.
+        vol = CONFIG.btc_5m_volatility if CONFIG.btc_5m_volatility > 0 else 30.0
+        remaining_sigma = vol * math.sqrt(max(1.0, min(time_remaining_sec, 300.0)) / 300.0)
+        direction_sign = 1.0 if direction == "UP" else -1.0
+        countertrend = direction_sign * price_delta < -remaining_sigma
+        momentum_confirms = (
+            direction_sign * mom_15s > 0
+            and abs(mom_15s * 15.0) >= vol * 0.15
+        )
+        countertrend_blocked = countertrend and (
+            fair_p < 0.60 or not momentum_confirms
+        )
+
+        # Strength is based on net edge, not the pre-cost market-price gap.
+        strength = 0.0 if countertrend_blocked else self._calc_strength(
+            net_edge,
             mom_5s,
             mom_15s,
             time_remaining_sec,
             choppiness,
+            apply_time_gate,
+            direction_sign,
         )
 
         btc_dir = "above" if price_delta >= 0 else "below"
         reason = (
             f"BTC {btc_dir} start by ${abs(price_delta):.2f}, "
             f"mom5={mom_5s:+.2f}$/s, mom15={mom_15s:+.2f}$/s, "
-            f"fair={fair_p:.3f} vs poly={poly_p:.3f}"
+            f"fair={fair_p:.3f} vs poly={poly_p:.3f} cost={entry_cost:.3f}"
+            f"{' countertrend-blocked' if countertrend_blocked else ''}"
         )
 
         return Signal(
@@ -123,6 +152,9 @@ class SignalGenerator:
             poly_implied_prob=poly_p,
             fair_prob=fair_p,
             reason=reason,
+            expected_entry_price=entry_price,
+            estimated_entry_cost_per_share=entry_cost,
+            probability_up=fair_prob_up,
         )
 
     def _estimate_fair_prob(
@@ -183,29 +215,25 @@ class SignalGenerator:
     def _calc_strength(
         self,
         edge: float,
-        price_delta: float,
         mom_5s: float,
         mom_15s: float,
         time_remaining_sec: float,
         choppiness: float = 0.0,
+        apply_time_gate: bool = True,
+        direction_sign: float = 1.0,
     ) -> float:
         """Signal strength (0..1). Must exceed CONFIG.min_signal_strength to trade."""
         # Edge contribution (primary): 15% edge = max score
-        edge_score = min(1.0, abs(edge) / 0.15)
+        edge_score = min(1.0, max(0.0, edge) / 0.15)
 
-        # Reject reversal setups where BTC has moved materially one way from the
-        # market start, but medium-term momentum is now materially moving back.
-        vol = CONFIG.btc_5m_volatility if CONFIG.btc_5m_volatility > 0 else 30.0
-        delta_significant = abs(price_delta) >= vol * 0.20
-        mom15_significant = abs(mom_15s * 15.0) >= vol * 0.15
-        if delta_significant and mom15_significant and (price_delta > 0) != (mom_15s > 0):
-            return 0.0
-
-        # Momentum agreement: short-term and medium-term agree?
-        if mom_5s == 0 and mom_15s == 0:
+        # Momentum should agree with the selected side, not just with itself.
+        aligned_5s, aligned_15s = direction_sign * mom_5s, direction_sign * mom_15s
+        if aligned_5s == 0 and aligned_15s == 0:
             mom_agreement = 0.5
-        elif (mom_5s > 0) == (mom_15s > 0):
+        elif aligned_5s > 0 and aligned_15s > 0:
             mom_agreement = 1.0
+        elif aligned_5s < 0 and aligned_15s < 0:
+            mom_agreement = 0.0
         else:
             # Disagreement: in choppy markets this kills the signal entirely
             mom_agreement = 0.5 * (1.0 - choppiness)
@@ -215,7 +243,9 @@ class SignalGenerator:
         effective_warmup = CONFIG.warmup_sec + choppiness * 15
 
         # Time window: don't trade in warmup or cooldown
-        if time_remaining_sec > (300 - effective_warmup):
+        if not apply_time_gate:
+            time_score = 1.0
+        elif time_remaining_sec > (300 - effective_warmup):
             # Still in warmup
             time_score = 0.0
         elif time_remaining_sec < CONFIG.cooldown_sec:

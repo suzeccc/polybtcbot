@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}General Settings — btcbot{% endblock %}
+
+{% block content %}
+<div class="strategy-heading">
+  <div>
+    <h1>General Settings</h1>
+    <p>Manage the bot runtime, simulated account and Polymarket account connection.</p>
+  </div>
+  <span class="strategy-current {{ 'paper' if settings_config.current_runtime_mode == 'paper' else 'live' }}">
+    {{ 'Paper trading' if settings_config.current_runtime_mode == 'paper' else 'Live trading' }} · current
+  </span>
+</div>
+
+<form id="general-settings-form" class="strategy-layout" data-guard-unsaved novalidate>
+  <div class="strategy-main">
+    <section class="strategy-section" aria-labelledby="runtime-title">
+      <header class="section-heading">
+        <h2 id="runtime-title">Bot runtime</h2>
+        <p>Choose whether the next bot launch simulates trades or submits real orders.</p>
+      </header>
+      <div class="strategy-fields">
+        <label class="strategy-field"><span>Trading mode</span>
+          <select name="runtime_mode" id="runtime-mode">
+            <option value="paper" {% if settings_config.runtime_mode == 'paper' %}selected{% endif %}>Paper trading</option>
+            <option value="live" {% if settings_config.runtime_mode == 'live' %}selected{% endif %}>Live trading</option>
+          </select>
+          <small>Mode changes take effect after restarting the bot.</small>
+        </label>
+        <div id="live-confirm-field" class="live-confirm" hidden>
+          <label class="strategy-toggle">
+            <input name="confirm_live" id="confirm-live" type="checkbox">
+            <span class="toggle-mark" aria-hidden="true"></span>
+            <span><strong>I understand Live mode can place real orders.</strong><small>This confirmation is required before saving Live mode.</small></span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section class="strategy-section" aria-labelledby="paper-title">
+      <header class="section-heading">
+        <h2 id="paper-title">Simulated account</h2>
+        <p>Set the starting USDC balance used by the dashboard and Quarter-Kelly sizing.</p>
+      </header>
+      <div class="strategy-fields">
+        <label class="strategy-field"><span>Starting balance · USDC</span>
+          <input name="paper_starting_balance" type="number" min="0.01" step="0.01" required value="{{ settings_config.paper_starting_balance }}">
+          <small>Trade history stays intact; the displayed simulated cash is recalculated from this starting balance.</small>
+        </label>
+      </div>
+    </section>
+
+    <section class="strategy-section" aria-labelledby="account-title">
+      <header class="section-heading">
+        <h2 id="account-title">Polymarket account</h2>
+        <p>Connect the wallet used for Live trading. The private key is saved only to this machine's .env file and is never shown again.</p>
+      </header>
+      <div class="strategy-fields">
+        <label class="strategy-field"><span>Wallet private key</span>
+          <input name="private_key" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" maxlength="66" placeholder="Leave blank to keep the saved key">
+          <small>{% if settings_config.account_configured %}A key is saved{% if not settings_config.account_active %} and will connect after restart{% else %} for the current process{% endif %}.{% else %}No key is saved. Enter a 32-byte hexadecimal private key to connect an account.{% endif %}</small>
+        </label>
+        <div class="account-note">
+          <span class="aside-label">Live USDC balance</span>
+          <p>View the connected wallet balance in the dashboard header. Account changes require a restart.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <aside class="strategy-aside">
+    <section class="active-config">
+      <p class="aside-label">Current process</p>
+      <h2>{{ 'Paper trading' if settings_config.current_runtime_mode == 'paper' else 'Live trading' }}</h2>
+      <p class="preview-detail">Saved startup mode: {{ 'Paper' if settings_config.runtime_mode == 'paper' else 'Live' }}</p>
+      <div class="preview-rule"></div>
+      <p class="aside-label">Account key</p>
+      <p class="preview-detail">{{ 'Configured' if settings_config.account_configured else 'Not configured' }}</p>
+    </section>
+    <section class="save-panel">
+      <button class="primary-btn" type="submit">Save changes</button>
+      <button class="secondary-btn" type="reset">Discard edits</button>
+      <div id="general-settings-status" class="settings-status" role="status" aria-live="polite"></div>
+      <p>Balance changes apply now. Restart with btcbot serve without mode flags to apply saved account and trading mode.</p>
+    </section>
+    <p class="local-only">Settings can be saved from this machine only.</p>
+  </aside>
+</form>
+
+<script>
+(() => {
+  const form = document.getElementById('general-settings-form');
+  const mode = document.getElementById('runtime-mode');
+  const liveConfirmField = document.getElementById('live-confirm-field');
+  const status = document.getElementById('general-settings-status');
+  const privateKey = form.elements.private_key;
+  const snapshot = () => JSON.stringify([...form.elements]
+    .filter(element => element.name)
+    .map(element => [element.name, element.type === 'checkbox' ? element.checked : element.value]));
+  let savedSnapshot = snapshot();
+  const update = () => {
+    liveConfirmField.hidden = mode.value !== 'live';
+    if (snapshot() !== savedSnapshot) {
+      status.textContent = 'Unsaved changes';
+      status.className = 'settings-status';
+    } else if (status.textContent === 'Unsaved changes') {
+      status.textContent = '';
+    }
+  };
+  const saveDefaults = () => form.querySelectorAll('input, select').forEach(control => {
+    if (control.type === 'checkbox') control.defaultChecked = control.checked;
+    else if (control.tagName === 'SELECT') [...control.options].forEach(option => { option.defaultSelected = option.selected; });
+    else control.defaultValue = control.value;
+  });
+  form.addEventListener('input', update);
+  form.addEventListener('change', update);
+  form.addEventListener('reset', () => setTimeout(() => {
+    update();
+    status.textContent = '';
+    status.className = 'settings-status';
+  }));
+  update();
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const payload = Object.fromEntries(new FormData(form));
+    payload.paper_starting_balance = Number(payload.paper_starting_balance);
+    payload.confirm_live = form.elements.confirm_live.checked;
+    status.textContent = 'Saving…';
+    status.className = 'settings-status';
+    const saveButton = form.querySelector('button[type="submit"]');
+    saveButton.disabled = true;
+    try {
+      const response = await fetch('/api/settings/general', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Could not save settings');
+      privateKey.value = '';
+      saveDefaults();
+      savedSnapshot = snapshot();
+      form.dispatchEvent(new Event('settings:saved'));
+      status.textContent = 'Saved · account and trading mode apply after restart';
+      status.classList.add('success');
+    } catch (error) {
+      status.textContent = error.message;
+      status.classList.add('error');
+    } finally {
+      saveButton.disabled = false;
+    }
+  });
+})();
+</script>
+{% endblock %}

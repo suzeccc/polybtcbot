@@ -16,6 +16,9 @@ class RegimeDetector:
         self._buffer: deque[bool] = deque(maxlen=window)
         self._min_samples = min_samples
 
+    def resize(self, window: int) -> None:
+        self._buffer = deque(self._buffer, maxlen=window)
+
     def record(self, first_half_dir: str, outcome: str) -> None:
         """Record whether this window reversed (first-half != final)."""
         self._buffer.append(first_half_dir != outcome)

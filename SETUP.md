@@ -160,6 +160,7 @@ BOT_PAPER_MODE=false
 # ── Bankroll ─────────────────────────────────────────────────────────
 # Start small. This is the total capital the bot sizes positions against.
 BOT_BANKROLL=100.0
+BOT_POSITION_MODE=dynamic       # Keep the existing Quarter-Kelly sizing
 
 # ── Risk (conservative defaults — adjust only after observing paper results)
 BOT_MAX_POSITION_USD=10.0        # Max $10 per trade (start low)
@@ -167,6 +168,7 @@ BOT_MAX_DAILY_LOSS_USD=30.0      # Stop after $30 daily loss
 BOT_MAX_CONSECUTIVE_LOSSES=5     # Pause 15min after 5 straight losses
 BOT_MAX_PRICE_TO_PAY=0.45        # Avoid paying too much for already-priced contracts
 BOT_HEDGE_TRIGGER=0.22           # Hedge once after a 22% drop from entry price
+BOT_MAX_HEDGE_USD=30.0           # Maximum notional amount for one hedge order
 
 # ── Signal thresholds ────────────────────────────────────────────────
 BOT_MIN_EDGE=0.12                # Require stronger directional edge
@@ -192,16 +194,16 @@ Before going live, verify your credentials work:
 source .venv/bin/activate
 
 python3 -c "
-from py_clob_client.client import ClobClient
-client = ClobClient('https://clob.polymarket.com', key='YOUR_PRIVATE_KEY', chain_id=137)
-creds = client.create_or_derive_api_creds()
-client.set_api_creds(creds)
-print('API Key:', creds.api_key[:8] + '...')
-print('Auth OK')
+from polymarket import SecureClient
+with SecureClient.create(private_key='YOUR_PRIVATE_KEY') as client:
+    balance = client.get_balance_allowance(asset_type='COLLATERAL')
+    print('Wallet type:', client.wallet_type)
+    print('Wallet:', client.wallet)
+    print('Available USDC:', balance.balance / 1_000_000)
 "
 ```
 
-If this prints `Auth OK`, your wallet is properly set up.
+This verifies the signer and its Polymarket wallet, including Deposit Wallet accounts.
 
 ---
 

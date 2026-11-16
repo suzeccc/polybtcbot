@@ -25,6 +25,7 @@ async def _lifespan(app: FastAPI):
     engine = Engine(paper_mode=CONFIG.paper_mode)
     app.state.engine = engine
     engine_task = asyncio.create_task(engine.run(), name="engine")
+    app.state.engine_task = engine_task
 
     try:
         yield

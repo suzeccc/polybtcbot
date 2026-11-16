@@ -14,7 +14,7 @@ dependencies = [
     "tenacity>=8.2",
     "aiosqlite>=0.20",
     "typer>=0.12",
-    "py-clob-client>=0.18",
+    "polymarket-client>=0.18.0,<0.19",
     "python-dotenv>=1.0",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
@@ -39,3 +39,4 @@ packages = ["btcbot"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "--basetemp=.pytest-tmp"

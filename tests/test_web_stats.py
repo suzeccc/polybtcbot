@@ -103,11 +103,13 @@ def test_api_stats_day_happy_path(client):
     today_midnight = int(
         datetime.datetime.combine(datetime.date.today(), datetime.time.min).timestamp()
     )
+    now_ts = int(datetime.datetime.now().timestamp())
+    first_resolved = max(today_midnight, now_ts - 3600)
     _seed(
         client.db_path,
         [
-            ("win1", 12.50, 1, today_midnight + 3600),
-            ("loss1", -4.00, 0, today_midnight + 7200),
+            ("win1", 12.50, 1, first_resolved),
+            ("loss1", -4.00, 0, now_ts),
         ],
     )
     r = client.get("/api/stats?period=day")

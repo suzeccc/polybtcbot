@@ -17,6 +17,15 @@ async def init_db(path: Path | None = None) -> None:
     p = path or CONFIG.db_path
     async with aiosqlite.connect(p) as conn:
         await conn.executescript(_SCHEMA_SQL)
+        cur = await conn.execute("PRAGMA table_info(trades)")
+        columns = {row[1] for row in await cur.fetchall()}
+        for name, declaration in (
+            ("signal_fair_prob", "REAL"),
+            ("signal_net_edge", "REAL"),
+            ("fee_usd", "REAL NOT NULL DEFAULT 0"),
+        ):
+            if name not in columns:
+                await conn.execute(f"ALTER TABLE trades ADD COLUMN {name} {declaration}")
         await conn.commit()
 
 

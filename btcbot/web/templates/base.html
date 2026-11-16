@@ -7,7 +7,9 @@
   <link rel="icon" href="/static/favicon.ico">
   <link rel="preload" href="/static/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=14">
+  <script src="/static/language.js?v=8" defer></script>
+  <script src="/static/settings_guard.js?v=1" defer></script>
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1" defer></script>
 </head>
@@ -25,13 +27,35 @@
       <a href="/trades" {% if active_page == 'trades' %}class="active"{% endif %}>Trades</a>
       <a href="/history" {% if active_page == 'history' %}class="active"{% endif %}>History</a>
       <a href="/stats" {% if active_page == 'stats' %}class="active"{% endif %}>Stats</a>
+      <a href="/settings" {% if active_page == 'settings' %}class="active"{% endif %}>Settings</a>
+      <a href="/strategy" {% if active_page == 'strategy' %}class="active"{% endif %}>Strategy</a>
     </nav>
-    <div class="bot-status">
-      {% if engine_running %}
-      <span class="pulse green"></span> <span style="font-weight: 600; font-size: 13px; color:var(--pos)">LIVE</span>
-      {% else %}
-      <span class="pulse gray"></span> <span class="muted" style="font-weight: 600; font-size: 13px;">OFFLINE</span>
-      {% endif %}
+    <div class="header-right">
+      <select id="language-select" aria-label="Language">
+        <option value="en">English</option>
+        <option value="zh">中文</option>
+      </select>
+      <div id="wallet-balances" class="wallet-balances" role="status" aria-live="polite"
+           hx-get="/partials/balances" hx-trigger="load, every 30s" hx-swap="innerHTML">
+        <div class="wallet-balance"><span>Paper USDC</span><strong>—</strong></div>
+        <div class="wallet-balance"><span>Live USDC</span><strong>—</strong></div>
+      </div>
+      <button id="auto-trading-toggle" class="auto-trading-toggle {{ 'enabled' if auto_trading_enabled else '' }}"
+              type="button" aria-pressed="{{ 'true' if auto_trading_enabled else 'false' }}"
+              aria-label="{{ 'Auto trading: ON' if auto_trading_enabled else 'Auto trading: OFF' }}"
+              title="Pausing new entries does not stop risk management for open positions."
+              data-running="{{ 'true' if engine_running else 'false' }}"
+              {% if not engine_running %}disabled{% endif %}>
+        {{ 'Auto trading: ON' if auto_trading_enabled else 'Auto trading: OFF' }}
+      </button>
+      <span id="auto-trading-status" class="auto-trading-status" role="status" aria-live="polite"></span>
+      <div class="bot-status">
+        {% if engine_running %}
+        <span class="pulse green"></span> <span style="font-weight: 600; font-size: 13px; color:var(--pos)">LIVE</span>
+        {% else %}
+        <span class="pulse gray"></span> <span class="muted" style="font-weight: 600; font-size: 13px;">OFFLINE</span>
+        {% endif %}
+      </div>
     </div>
   </header>
 
@@ -40,5 +64,33 @@
   </main>
 
   <footer>btcbot v1.0 — Polymarket 5m BTC Up/Down</footer>
+  <script>
+    const autoTradingButton = document.getElementById('auto-trading-toggle');
+    const autoTradingStatus = document.getElementById('auto-trading-status');
+    autoTradingButton?.addEventListener('click', async () => {
+      autoTradingButton.disabled = true;
+      autoTradingStatus.textContent = '';
+      autoTradingStatus.classList.remove('error');
+      const enabled = autoTradingButton.getAttribute('aria-pressed') !== 'true';
+      try {
+        const response = await fetch('/api/auto-trading', {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled})
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || 'Could not update auto trading');
+        const label = result.enabled ? 'Auto trading: ON' : 'Auto trading: OFF';
+        autoTradingButton.setAttribute('aria-pressed', String(result.enabled));
+        autoTradingButton.setAttribute('aria-label', window.translateUI?.(label) || label);
+        autoTradingButton.textContent = window.translateUI?.(label) || label;
+        autoTradingButton.classList.toggle('enabled', result.enabled);
+      } catch (_) {
+        autoTradingStatus.textContent = window.translateUI?.('Could not update auto trading') || 'Could not update auto trading';
+        autoTradingStatus.classList.add('error');
+      } finally {
+        autoTradingButton.disabled = autoTradingButton.dataset.running !== 'true';
+      }
+    });
+  </script>
 </body>
 </html>

@@ -1,0 +1,8 @@
+<div class="wallet-balance">
+  <span>Paper USDC</span>
+  <strong>{% if paper_balance is not none %}{{ '%.2f'|format(paper_balance) }}{% else %}Unavailable{% endif %}</strong>
+</div>
+<div class="wallet-balance" title="{{ live_status }}">
+  <span>Live USDC</span>
+  <strong>{% if live_balance is not none %}{{ '%.2f'|format(live_balance) }}{% elif live_status == 'Set BOT_PRIVATE_KEY' %}No key{% else %}Unavailable{% endif %}</strong>
+</div>

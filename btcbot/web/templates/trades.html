@@ -4,7 +4,7 @@
 {% block content %}
 <h1>Trade Log</h1>
 
-<div class="stats-row">
+<div class="stats-row trade-stats-row">
   <div class="stat">
     <div class="label">Total Trades</div>
     <div class="value">{{ total_trades }}</div>
@@ -18,10 +18,34 @@
     <div class="value" style="color: var(--warn)">{{ hedges }}</div>
   </div>
   <div class="stat">
-    <div class="label">Avg Size</div>
-    <div class="value mono">${{ "%.2f"|format(avg_size) }}</div>
+    <div class="label">All-Time Win Rate</div>
+    <div class="value" style="color: var(--accent)">{{ "%.1f"|format(win_rate) }}%</div>
+  </div>
+  <div class="stat">
+    <div class="label">Avg Net / Market</div>
+    <div class="value mono" style="color: {{ 'var(--pos)' if avg_net_pnl >= 0 else 'var(--neg)' }}">${{ "%+.2f"|format(avg_net_pnl) }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">All-Time Net P&amp;L</div>
+    <div class="value mono" style="color: {{ 'var(--pos)' if total_net_pnl >= 0 else 'var(--neg)' }}">${{ "%+.2f"|format(total_net_pnl) }}</div>
   </div>
 </div>
+
+<section class="panel trade-range">
+  <h2>Interval Statistics</h2>
+  <p>Win rate and net P&amp;L use each market's settlement time.</p>
+  <form class="trade-range-form" method="get" action="/trades">
+    <label>Start time<input type="datetime-local" name="start" value="{{ range_start }}" step="60" required></label>
+    <label>End time<input type="datetime-local" name="end" value="{{ range_end }}" step="60" required></label>
+    <button class="primary-btn" type="submit">Apply</button>
+  </form>
+  <div class="stats-row trade-range-stats">
+    <div class="stat"><div class="label">Markets</div><div class="value">{{ range_markets }}</div></div>
+    <div class="stat"><div class="label">Win Rate</div><div class="value" style="color: var(--accent)">{{ "%.1f"|format(range_win_rate) }}%</div></div>
+    <div class="stat"><div class="label">Wins / Losses / Hedged</div><div class="value">{{ range_wins }} / {{ range_losses }} / {{ range_hedged }}</div></div>
+    <div class="stat"><div class="label">Net P&amp;L</div><div class="value mono" style="color: {{ 'var(--pos)' if range_net_pnl >= 0 else 'var(--neg)' }}">${{ "%+.2f"|format(range_net_pnl) }}</div></div>
+  </div>
+</section>
 
 {% if trades %}
 <div class="table-container">
@@ -33,9 +57,11 @@
         <th>Type</th>
         <th>Direction</th>
         <th>Price</th>
-        <th>Qty</th>
+        <th>Shares</th>
         <th>Amount</th>
-        <th>Edge</th>
+        <th>Fee</th>
+        <th>P&amp;L</th>
+        <th>Win Probability</th>
         <th>Strength</th>
         <th>Result</th>
         <th>Mode</th>
@@ -51,12 +77,15 @@
         <td class="num">${{ "%.3f"|format(t.fill_price) }}</td>
         <td class="num">{{ "%.1f"|format(t.token_quantity) }}</td>
         <td class="num">${{ "%.2f"|format(t.amount_usd) }}</td>
-        <td class="num {{ 'pos' if (t.signal_edge or 0) > 0 else '' }}">{{ "%+.1f"|format((t.signal_edge or 0) * 100) }}%</td>
+        <td class="num">${{ "%.5f"|format(t.fee_usd) }}</td>
+        <td class="num {{ 'pos' if t.pnl is not none and t.pnl >= 0 else 'neg' if t.pnl is not none else '' }}">{{ "$%+.2f"|format(t.pnl) if t.pnl is not none else '—' }}</td>
+        <td class="num">{{ "%.1f"|format(t.win_probability * 100) ~ '%' if t.win_probability is not none else '—' }}</td>
         <td class="num">{{ "%.0f"|format((t.signal_strength or 0) * 100) }}%</td>
         <td>
           {% if t.result == 'win' %}<span class="badge win">WIN</span>
           {% elif t.result == 'loss' %}<span class="badge loss">LOSS</span>
           {% elif t.result == 'hedge' %}<span class="badge hedge">HEDGED</span>
+          {% elif t.result == 'exit' %}<span class="badge exit">SOLD</span>
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
         <td>
@@ -71,6 +100,16 @@
     </tbody>
   </table>
 </div>
+{% if page_count > 1 %}
+<nav class="trade-pagination" aria-label="Trade pagination">
+  <span class="muted"><span>Showing</span> {{ showing_from }}–{{ showing_to }} <span>of</span> {{ total_trades }} <span>trades</span></span>
+  <div class="trade-pagination-controls">
+    {% if page > 1 %}<a href="/trades?page={{ page - 1 }}&amp;start={{ range_start }}&amp;end={{ range_end }}">Previous</a>{% endif %}
+    <span class="muted">{{ page }} / {{ page_count }}</span>
+    {% if page < page_count %}<a href="/trades?page={{ page + 1 }}&amp;start={{ range_start }}&amp;end={{ range_end }}">Next</a>{% endif %}
+  </div>
+</nav>
+{% endif %}
 {% else %}
 <div class="panel empty-state">No trades yet.</div>
 {% endif %}
